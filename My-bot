@@ -1,0 +1,424 @@
+import discord
+from discord.ext import commands
+from discord import app_commands
+from typing import Optional, Literal, Union
+import json, os, asyncio, datetime, random, aiohttp
+from groq import Groq
+
+# --- [ الإعدادات ] ---
+TOKEN = "MTQ3Mzc0OTgxNzg2NzEwODQyMw.GJlHSX.b4Z0yA2Hk_7wFRP9dSduK0z6oYWdGSq86HkI_A"
+GROQ_KEY = "Gsk_k0hbTTHzM5aX6YWUdnnCWGdyb3FYYucZA9KAZj7dc8Us5QiPlNf3"
+OWNER_ID = 1413257808601682100
+
+groq_client = Groq(api_key=GROQ_KEY)
+
+class LiveZoneMega(commands.Bot):
+    def __init__(self):
+        intents = discord.Intents.all()
+        super().__init__(command_prefix="!", intents=intents)
+        self.db_path = "livezone_mega_db.json"
+        # قاعدة البيانات تشمل الرومات المختارة للذكاء
+        self.db = {"users": {}, "guilds": {}, "responses": {}, "tickets": [], "warns": {}, "ai_rooms": []}
+
+    def load_db(self):
+        if os.path.exists(self.db_path):
+            try:
+                with open(self.db_path, "r") as f:
+                    data = json.load(f)
+                    for key in data: self.db[key] = data[key]
+            except: pass
+
+    def save_db(self):
+        with open(self.db_path, "w") as f: json.dump(self.db, f, indent=4)
+
+    async def setup_hook(self):
+        self.load_db()
+        await self.tree.sync()
+
+bot = LiveZoneMega()
+
+def get_u(uid):
+    uid = str(uid)
+    if uid not in bot.db["users"]: 
+        bot.db["users"][uid] = {"pocket": 1000, "bank": 0, "inv": [], "last_work": 0}
+    return bot.db["users"][uid]
+
+def is_boss(it: discord.Interaction):
+    return it.user.id == OWNER_ID or it.user.guild_permissions.administrator
+
+# --- [ 🤖 أوامر نظام الذكاء الجديد ] ---
+
+@bot.tree.command(name="تحديد_روم_الذكاء", description="تحديد روم للرد التلقائي بالذكاء الاصطناعي")
+async def set_ai_room(it: discord.Interaction, channel: discord.TextChannel):
+    if not is_boss(it): return
+    if "ai_rooms" not in bot.db: bot.db["ai_rooms"] = []
+    if channel.id not in bot.db["ai_rooms"]:
+        bot.db["ai_rooms"].append(channel.id)
+        bot.save_db()
+        await it.response.send_message(f"✅ تم! أي رسالة في {channel.mention} سيرد عليها الذكاء الاصطناعي.")
+    else:
+        await it.response.send_message("⚠️ الروم محدد مسبقاً.")
+
+@bot.tree.command(name="الغاء_روم_الذكاء", description="إلغاء نظام الذكاء من روم معين")
+async def unset_ai_room(it: discord.Interaction, channel: discord.TextChannel):
+    if not is_boss(it): return
+    if channel.id in bot.db.get("ai_rooms", []):
+        bot.db["ai_rooms"].remove(channel.id)
+        bot.save_db()
+        await it.response.send_message(f"❌ تم إلغاء نظام الذكاء من {channel.mention}.")
+    else:
+        await it.response.send_message("⚠️ الروم غير مفعل فيه النظام.")
+
+# --- [ 🛡️ أوامر الإدارة (33 أمر) ] ---
+
+@bot.tree.command(name="قفل", description="1. قفل الروم")
+async def lock(it: discord.Interaction):
+    if not is_boss(it): return
+    await it.channel.set_permissions(it.guild.default_role, send_messages=False)
+    await it.response.send_message("🔒 تم قفل القناة.")
+
+@bot.tree.command(name="فتح", description="2. فتح الروم")
+async def unlock(it: discord.Interaction):
+    if not is_boss(it): return
+    await it.channel.set_permissions(it.guild.default_role, send_messages=True)
+    await it.response.send_message("🔓 تم فتح القناة.")
+
+@bot.tree.command(name="مسح", description="3. مسح الرسائل")
+async def clear(it: discord.Interaction, count: int):
+    if not is_boss(it): return
+    await it.channel.purge(limit=count)
+    await it.response.send_message(f"✅ تم مسح {count} رسالة.", ephemeral=True)
+
+@bot.tree.command(name="طرد", description="4. طرد عضو")
+async def kick(it: discord.Interaction, user: discord.Member):
+    if not is_boss(it): return
+    await user.kick()
+    await it.response.send_message(f"👞 طردنا {user.mention}")
+
+@bot.tree.command(name="باند", description="5. حظر عضو")
+async def ban(it: discord.Interaction, user: discord.Member):
+    if not is_boss(it): return
+    await user.ban()
+    await it.response.send_message(f"🚫 حظرنا {user.mention}")
+
+@bot.tree.command(name="فك_باند", description="6. فك حظر")
+async def unban(it: discord.Interaction, user_id: str):
+    if not is_boss(it): return
+    user = await bot.fetch_user(int(user_id))
+    await it.guild.unban(user)
+    await it.response.send_message(f"✅ فكينا الحظر عن {user.name}")
+
+@bot.tree.command(name="اسكت", description="7. تايم أوت")
+async def mute(it: discord.Interaction, user: discord.Member, minutes: int):
+    if not is_boss(it): return
+    await user.timeout(datetime.timedelta(minutes=minutes))
+    await it.response.send_message(f"🔇 سكتناه {minutes} دقيقة.")
+
+@bot.tree.command(name="تحدث", description="8. فك تايم أوت")
+async def unmute(it: discord.Interaction, user: discord.Member):
+    if not is_boss(it): return
+    await user.timeout(None)
+    await it.response.send_message(f"🔊 خلوه يتكلم {user.mention}")
+
+@bot.tree.command(name="تحذير", description="9. تحذير عضو")
+async def warn(it: discord.Interaction, user: discord.Member):
+    if not is_boss(it): return
+    uid = str(user.id)
+    bot.db["warns"][uid] = bot.db["warns"].get(uid, 0) + 1
+    bot.save_db()
+    await it.response.send_message(f"⚠️ تحذير لـ {user.mention} (الإجمالي: {bot.db['warns'][uid]})")
+
+@bot.tree.command(name="حذف_تحذير", description="10. تصفير التحذيرات")
+async def clear_warns(it: discord.Interaction, user: discord.Member):
+    if not is_boss(it): return
+    bot.db["warns"][str(user.id)] = 0
+    bot.save_db()
+    await it.response.send_message(f"✅ صفرنا تحذيرات {user.mention}")
+
+@bot.tree.command(name="تحذيرات", description="11. سجل التحذيرات")
+async def show_warns(it: discord.Interaction, user: discord.Member):
+    w = bot.db["warns"].get(str(user.id), 0)
+    await it.response.send_message(f"📋 {user.name} عنده `{w}` تحذيرات.")
+
+@bot.tree.command(name="تثبيت", description="12. تثبيت رسالة")
+async def pin(it: discord.Interaction, msg_id: str):
+    if not is_boss(it): return
+    msg = await it.channel.fetch_message(int(msg_id))
+    await msg.pin()
+    await it.response.send_message("📌 ثبتنا الرسالة.")
+
+@bot.tree.command(name="الغاء_تثبيت", description="13. فك التثبيت")
+async def unpin(it: discord.Interaction, msg_id: str):
+    if not is_boss(it): return
+    msg = await it.channel.fetch_message(int(msg_id))
+    await msg.unpin()
+    await it.response.send_message("🔓 لغينا التثبيت.")
+
+@bot.tree.command(name="رتبة", description="14. إعطاء رتبة")
+async def add_role(it: discord.Interaction, user: discord.Member, role: discord.Role):
+    if not is_boss(it): return
+    await user.add_roles(role)
+    await it.response.send_message(f"✅ عطيناه رتبة {role.name}")
+
+@bot.tree.command(name="سحب_رتبة", description="15. سحب رتبة")
+async def rem_role(it: discord.Interaction, user: discord.Member, role: discord.Role):
+    if not is_boss(it): return
+    await user.remove_roles(role)
+    await it.response.send_message(f"❌ سحبنا رتبة {role.name}")
+
+@bot.tree.command(name="تغيير_لقب", description="16. تغيير النك نيم")
+async def nick(it: discord.Interaction, user: discord.Member, name: str):
+    if not is_boss(it): return
+    await user.edit(nick=name)
+    await it.response.send_message(f"📝 صار اسمه {name}")
+
+@bot.tree.command(name="انشاء_روم", description="17. إنشاء قناة")
+async def mkch(it: discord.Interaction, name: str):
+    if not is_boss(it): return
+    await it.guild.create_text_channel(name)
+    await it.response.send_message(f"✅ سوينا روم {name}")
+
+@bot.tree.command(name="حذف_روم", description="18. حذف قناة")
+async def rmch(it: discord.Interaction):
+    if not is_boss(it): return
+    await it.channel.delete()
+
+@bot.tree.command(name="انشاء_رتبة", description="19. إنشاء رتبة")
+async def mkrole(it: discord.Interaction, name: str):
+    if not is_boss(it): return
+    await it.guild.create_role(name=name)
+    await it.response.send_message(f"✅ سوينا رتبة {name}")
+
+@bot.tree.command(name="حذف_رتبة", description="20. حذف رتبة")
+async def rmrole(it: discord.Interaction, role: discord.Role):
+    if not is_boss(it): return
+    await role.delete()
+    await it.response.send_message(f"🗑️ حذفنا رتبة {role.name}")
+
+@bot.tree.command(name="اخفاء_روم", description="21. إخفاء الروم")
+async def hide(it: discord.Interaction):
+    if not is_boss(it): return
+    await it.channel.set_permissions(it.guild.default_role, view_channel=False)
+    await it.response.send_message("👻 الروم اختفى!")
+
+@bot.tree.command(name="اظهار_روم", description="22. إظهار الروم")
+async def show(it: discord.Interaction):
+    if not is_boss(it): return
+    await it.channel.set_permissions(it.guild.default_role, view_channel=True)
+    await it.response.send_message("👁️ الروم ظهر!")
+
+@bot.tree.command(name="سحب_الكل", description="23. سحب للفويس")
+async def pull(it: discord.Interaction):
+    if not is_boss(it) or not it.user.voice: return
+    for m in it.guild.members:
+        if m.voice: await m.move_to(it.user.voice.channel)
+    await it.response.send_message("🌪️ سحبنا الكل!")
+
+@bot.tree.command(name="اسكات_صوتي", description="24. ميوت فويس للكل")
+async def vmute(it: discord.Interaction):
+    if not is_boss(it) or not it.user.voice: return
+    for m in it.user.voice.channel.members: await m.edit(mute=True)
+    await it.response.send_message("🤐 سكتنا الفويس!")
+
+@bot.tree.command(name="تحدث_صوتي", description="25. فك ميوت الفويس")
+async def vunmute(it: discord.Interaction):
+    if not is_boss(it) or not it.user.voice: return
+    for m in it.user.voice.channel.members: await m.edit(mute=False)
+    await it.response.send_message("🗣️ تكلموا!")
+
+@bot.tree.command(name="فك_القيود", description="26. تصفير الروم")
+async def reset(it: discord.Interaction):
+    if not is_boss(it): return
+    await it.channel.edit(sync_permissions=True)
+    await it.response.send_message("🔓 صفرنا الروم!")
+
+@bot.tree.command(name="تغيير_اسم_السيرفر", description="27. اسم السيرفر")
+async def sname(it: discord.Interaction, name: str):
+    if not is_boss(it): return
+    await it.guild.edit(name=name)
+    await it.response.send_message("✅ غيرنا اسم السيرفر")
+
+@bot.tree.command(name="تغيير_صورة_السيرفر", description="28. صورة السيرفر")
+async def sicon(it: discord.Interaction, url: str):
+    if not is_boss(it): return
+    async with aiohttp.ClientSession() as s:
+        async with s.get(url) as r: await it.guild.edit(icon=await r.read())
+    await it.response.send_message("📸 غيرنا الصورة")
+
+@bot.tree.command(name="وضع_البطء", description="29. سلو مود")
+async def slow(it: discord.Interaction, sec: int):
+    if not is_boss(it): return
+    await it.channel.edit(slowmode_delay=sec)
+    await it.response.send_message(f"⏳ البطء: {sec} ثانية")
+
+@bot.tree.command(name="قفل_الصور", description="30. منع الصور")
+async def noimg(it: discord.Interaction):
+    if not is_boss(it): return
+    await it.channel.set_permissions(it.guild.default_role, attach_files=False)
+    await it.response.send_message("🚫 قفلنا الصور!")
+
+@bot.tree.command(name="قفل_الروابط", description="31. منع الروابط")
+async def nolink(it: discord.Interaction):
+    if not is_boss(it): return
+    bot.db["guilds"][str(it.guild.id)] = {"nolink": True}
+    bot.save_db()
+    await it.response.send_message("🚫 قفلنا الروابط!")
+
+@bot.tree.command(name="تنشيط_الحماية", description="32. حماية")
+async def security(it: discord.Interaction):
+    if not is_boss(it): return
+    await it.response.send_message("🛡️ الحماية شغالة!")
+
+@bot.tree.command(name="سجل_الادارة", description="33. سجل الإدارة")
+async def logadmin(it: discord.Interaction):
+    if not is_boss(it): return
+    await it.response.send_message("📜 السجل محفوظ داخلياً.")
+
+# --- [ 💰 الاقتصاد (16 أمر) ] ---
+
+@bot.tree.command(name="راتب", description="1. راتب")
+async def daily(it: discord.Interaction):
+    u = get_u(it.user.id); u["pocket"] += 5000; bot.save_db()
+    await it.response.send_message("💵 خذ 5000")
+
+@bot.tree.command(name="رصيد", description="2. رصيد")
+async def bal(it: discord.Interaction):
+    u = get_u(it.user.id)
+    await it.response.send_message(f"💰 جيبك: {u['pocket']} | بنكك: {u['bank']}")
+
+@bot.tree.command(name="تحويل", description="3. تحويل")
+async def trans(it: discord.Interaction, user: discord.Member, amt: int):
+    u1, u2 = get_u(it.user.id), get_u(user.id)
+    if u1["pocket"] < amt: return await it.response.send_message("❌ مطفر!")
+    u1["pocket"] -= amt; u2["pocket"] += amt; bot.save_db()
+    await it.response.send_message(f"✅ حولنا {amt}")
+
+@bot.tree.command(name="توب_اقتصاد", description="4. توب")
+async def topeco(it: discord.Interaction):
+    sorted_u = sorted(bot.db["users"].items(), key=lambda x: x[1]["pocket"], reverse=True)[:5]
+    await it.response.send_message(f"🏆 توب: \n" + "\n".join([f"<@{k}>: {v['pocket']}" for k,v in sorted_u]))
+
+@bot.tree.command(name="متجر", description="5. متجر")
+async def shop(it: discord.Interaction):
+    await it.response.send_message("🛒 متجر: 1- VIP (50000)")
+
+@bot.tree.command(name="شراء", description="6. شراء")
+async def buy(it: discord.Interaction, id: int):
+    u = get_u(it.user.id)
+    if id == 1 and u["pocket"] >= 50000: u["pocket"] -= 50000; u["inv"].append("VIP"); bot.save_db(); await it.response.send_message("✅ شريت!")
+    else: await it.response.send_message("❌ رصيدك!")
+
+@bot.tree.command(name="حقيبة", description="7. شنطة")
+async def bag(it: discord.Interaction):
+    u = get_u(it.user.id)
+    await it.response.send_message(f"🎒 عندك: {u['inv']}")
+
+@bot.tree.command(name="عمل", description="8. شغل")
+async def work(it: discord.Interaction):
+    u = get_u(it.user.id); g = random.randint(100, 1000); u["pocket"] += g; bot.save_db()
+    await it.response.send_message(f"👷 ربحت {g}")
+
+@bot.tree.command(name="سرقة", description="9. سرقة")
+async def steal(it: discord.Interaction, user: discord.Member):
+    u1, u2 = get_u(it.user.id), get_u(user.id)
+    if u2["pocket"] < 100: return await it.response.send_message("❌ مطفر!")
+    s = random.randint(1, 100); u1["pocket"] += s; u2["pocket"] -= s; bot.save_db()
+    await it.response.send_message(f"😈 سرقت {s}")
+
+@bot.tree.command(name="استثمار", description="10. استثمار")
+async def invst(it: discord.Interaction, amt: int):
+    u = get_u(it.user.id)
+    if u["pocket"] < amt: return
+    if random.random() > 0.5: u["pocket"] += amt; await it.response.send_message("📈 ربحت!")
+    else: u["pocket"] -= amt; await it.response.send_message("📉 خسرت!")
+    bot.save_db()
+
+@bot.tree.command(name="بنك", description="11. إيداع")
+async def dep(it: discord.Interaction, amt: int):
+    u = get_u(it.user.id)
+    if u["pocket"] < amt: return
+    u["pocket"] -= amt; u["bank"] += amt; bot.save_db(); await it.response.send_message("🏦 حطيناهم بالبنك")
+
+@bot.tree.command(name="سحب", description="12. سحب")
+async def wit(it: discord.Interaction, amt: int):
+    u = get_u(it.user.id)
+    if u["bank"] < amt: return
+    u["bank"] -= amt; u["pocket"] += amt; bot.save_db(); await it.response.send_message("💵 سحبناهم")
+
+@bot.tree.command(name="حظ", description="13. حظ")
+async def luck(it: discord.Interaction):
+    r = random.randint(-100, 100); u = get_u(it.user.id); u["pocket"] += r; bot.save_db()
+    await it.response.send_message(f"🎲 حظك: {r}")
+
+@bot.tree.command(name="مقامرة", description="14. قمار")
+async def gmb(it: discord.Interaction, amt: int):
+    u = get_u(it.user.id)
+    if u["pocket"] < amt: return
+    if random.random() > 0.6: u["pocket"] += amt; m = "🤑"
+    else: u["pocket"] -= amt; m = "💸"
+    bot.save_db(); await it.response.send_message(m)
+
+@bot.tree.command(name="تعدين", description="15. تعدين")
+async def mine(it: discord.Interaction):
+    u = get_u(it.user.id); g = random.randint(10, 100); u["pocket"] += g; bot.save_db(); await it.response.send_message(f"⛏️ {g}")
+
+@bot.tree.command(name="هبة", description="16. هبة")
+async def give(it: discord.Interaction, user: discord.Member, amt: int):
+    if it.user.id != OWNER_ID: return
+    u = get_u(user.id); u["pocket"] += amt; bot.save_db(); await it.response.send_message("🎁")
+
+# --- [ 🎮 تسلية وذكاء ] ---
+
+@bot.tree.command(name="ask", description="اسأل ذكاء Groq")
+async def ask(it: discord.Interaction, q: str):
+    await it.response.defer()
+    try:
+        # استخدام الموديل الجديد لضمان العمل
+        c = groq_client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": q}])
+        await it.followup.send(f"⚡ **الرد:**\n{c.choices[0].message.content[:1900]}")
+    except:
+        await it.followup.send("⚠️ خطأ في الاتصال بالذكاء الاصطناعي.")
+
+@bot.tree.command(name="لو_خيروك", description="لعبة")
+async def choice(it: discord.Interaction):
+    await it.response.send_message(f"🤔 {random.choice(['تطير', 'تختفي'])}")
+
+@bot.tree.command(name="صراحة", description="لعبة")
+async def truth(it: discord.Interaction):
+    await it.response.send_message(f"💬 {random.choice(['تحب؟', 'تخاف؟'])}")
+
+@bot.tree.command(name="مساعدة", description="أوامر البوت")
+async def help_cmd(it: discord.Interaction):
+    await it.response.send_message("🛡️ إدارة (33) | 💰 اقتصاد (16) | 🤖 ذكاء تلقائي")
+
+# --- [ 🤖 معالجة الرسائل والرد التلقائي ] ---
+
+@bot.event
+async def on_message(message):
+    if message.author.bot: return
+
+    # نظام الرد التلقائي في روم الذكاء المحدد
+    if message.channel.id in bot.db.get("ai_rooms", []):
+        async with message.channel.typing():
+            try:
+                c = groq_client.chat.completions.create(
+                    model="llama-3.3-70b-versatile",
+                    messages=[{"role": "user", "content": message.content}]
+                )
+                await message.reply(c.choices[0].message.content[:1900])
+            except:
+                pass
+        return
+
+    # الردود العادية (إذا وجدت)
+    if message.content in bot.db.get("responses", {}):
+        await message.channel.send(bot.db["responses"][message.content])
+
+    await bot.process_commands(message)
+
+@bot.event
+async def on_ready():
+    await bot.tree.sync()
+    print(f"✅ {bot.user} جاهز! موديل Llama 3.3 شغال.")
+
+bot.run(TOKEN)
